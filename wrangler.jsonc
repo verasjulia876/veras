@@ -1,0 +1,65 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "veras",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "workers_dev": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*",
+      "/webhook",
+      "/oauth/*",
+      "/uploads/*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "directcash-db",
+      "database_id": "628da814-eb7d-4fb8-8e8a-5768695d5bda",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "vars": {
+    "GRAPH_VERSION": "v25.0",
+    "LICENSE_SERVER_URL": "https://livecash-license-server.suporterhaianebarreto.workers.dev",
+    "LICENSE_ENFORCEMENT": "enabled"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FLOW_SCHEDULER",
+        "class_name": "FlowScheduler"
+      },
+      {
+        "name": "FLOW_MEDIA",
+        "class_name": "FlowMedia"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "flow-tools-v1",
+      "new_sqlite_classes": [
+        "FlowScheduler",
+        "FlowMedia"
+      ]
+    }
+  ],
+  "keep_vars": true
+}

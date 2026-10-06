@@ -1,0 +1,57 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {generateKeyPairSync,sign} from 'node:crypto';
+import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
+import worker from '../src/index';
+import {ingest,drain,now,type AppEnv} from '../src/meta';
+import {seal} from '../src/core';
+
+test('D1 real: autenticação, licença, deduplicação, fila e pausa',async()=>{
+ const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-09-15',d1Databases:['DB'],bindings:{LICENSE_ENFORCEMENT:'enabled',APP_KEY:'test-key',ADMIN_PASSWORD:'test-password',GRAPH_VERSION:'v25.0',LICENSE_SERVER_URL:'https://license.example'}}));
+ const oldFetch=globalThis.fetch;
+ try{
+  const env=await mf.getBindings<AppEnv>();
+  for(const sql of (readFileSync('migrations/0001_initial.sql','utf8')+';'+readFileSync('migrations/0002_conversations.sql','utf8')+';'+readFileSync('migrations/0003_profiles.sql','utf8')).split(';').map(s=>s.trim()).filter(Boolean))await env.DB.prepare(sql).run();
+  const pending:Promise<unknown>[]=[];const ctx={waitUntil(p:Promise<unknown>){pending.push(p);},passThroughOnException(){},props:{},exports:{}} as ExecutionContext;
+  const request=(path:string,options:RequestInit={})=>worker.fetch(new Request('https://test.example'+path,options),env,ctx);
+  assert.equal((await request('/api/status')).status,401);
+  assert.equal((await request('/api/login',{method:'POST',body:JSON.stringify({password:'test-password'})})).status,403);
+  const login=await request('/api/login',{method:'POST',headers:{Origin:'https://test.example'},body:JSON.stringify({password:'test-password'})});assert.equal(login.status,200);
+  const cookie=login.headers.get('set-cookie')!.split(';')[0];assert.match(login.headers.get('set-cookie')!,/HttpOnly/);
+  const headers={Origin:'https://test.example',Cookie:cookie};
+  const api=(path:string,data:unknown)=>request(path,{method:'POST',headers,body:JSON.stringify(data)});
+  const rule={name:'Material',trigger:'comment',media_id:'888',keywords:'quero',message:'Seu material',link:'https://example.com',public_reply:'Confira seu Direct',active:true};
+  assert.equal((await api('/api/rules',rule)).status,400);
+  await env.DB.prepare('INSERT INTO account VALUES(?,?,?,?,?)').bind('12345','test',await seal('fake-token',env.APP_KEY),now()+86400,now()).run();
+  assert.equal((await api('/api/rules',rule)).status,400);
+  const code='DC-'+'A'.repeat(32);
+  const online=()=>Response.json({ok:true,product:'directcash',instagramId:'12345',customerName:'Aluna teste',isLifetime:false,expiresAt:new Date(Date.now()+86400000).toISOString()});
+  globalThis.fetch=async()=>online();assert.equal((await api('/api/license',{code})).status,200);
+  const saved=await api('/api/rules',rule);assert.equal(saved.status,200);const {id}=await saved.json() as {id:string};
+  const event=(cid:string,text='Quero!',from='222',mediaId='888',time=now())=>({object:'instagram',entry:[{id:'12345',time,changes:[{field:'comments',value:{id:cid,text,from:{id:from},media:{id:mediaId}}}]}]});
+  await Promise.all([ingest(env,event('c1')),ingest(env,event('c1'))]);
+  const activityEvents=await env.DB.prepare("SELECT detail FROM events WHERE kind='comment'").all<{detail:string}>();assert.equal(activityEvents.results.length,1);assert.equal(JSON.parse(activityEvents.results[0].detail).text,'Quero!');assert.equal(JSON.parse(activityEvents.results[0].detail).userId,'222');
+  assert.equal((await env.DB.prepare('SELECT count(*) n FROM jobs').first<{n:number}>())?.n,2);
+  await ingest(env,event('self','quero','12345'));await ingest(env,event('other','quero','222','777'));await ingest(env,event('old','quero','222','888',now()-8*86400));
+  assert.equal((await env.DB.prepare('SELECT count(*) n FROM jobs').first<{n:number}>())?.n,2);
+  const calls:{url:string;body:Record<string,unknown>}[]=[];
+  globalThis.fetch=async(input,init)=>{calls.push({url:String(input),body:JSON.parse(String(init?.body))});return new Response(JSON.stringify({message_id:'m1'}),{headers:{'Content-Type':'application/json'}});};
+  await Promise.all([drain(env),drain(env)]);assert.equal(calls.length,2);assert.ok(calls[0].url.endsWith('/messages'));assert.deepEqual(calls[0].body.recipient,{comment_id:'c1'});assert.ok(calls[1].url.endsWith('/replies'));
+  await ingest(env,event('c1'));await drain(env);assert.equal(calls.length,2);
+  await ingest(env,event('c2'));await api('/api/rules',{...rule,id,active:false});await drain(env);assert.equal(calls.length,2);assert.equal((await env.DB.prepare("SELECT status FROM jobs WHERE id='comment:c2'").first<{status:string}>())?.status,'cancelled');
+  await api('/api/rules',{...rule,id,active:true});await ingest(env,event('c3'));globalThis.fetch=async()=>{throw Error('network dropped');};await drain(env);assert.equal((await env.DB.prepare("SELECT status FROM jobs WHERE id='comment:c3'").first<{status:string}>())?.status,'uncertain');
+  let retried=0;globalThis.fetch=async()=>{retried++;return new Response('{}');};await drain(env);assert.equal(retried,0);
+  const dmRule={...rule,name:'Resposta no Direct',trigger:'dm',media_id:'',public_reply:''};assert.equal((await api('/api/rules',dmRule)).status,200);
+  const dmEvent=(mid:string,time=Date.now(),echo=false)=>({object:'instagram',entry:[{id:'12345',messaging:[{sender:{id:'333'},timestamp:time,message:{mid,text:'quero',is_echo:echo}}]}]});
+  await ingest(env,dmEvent('d1'));await ingest(env,dmEvent('d1'));await ingest(env,dmEvent('echo',Date.now(),true));await ingest(env,dmEvent('stale',Date.now()-25*3600000));
+  assert.equal((await env.DB.prepare("SELECT count(*) n FROM jobs WHERE kind='dm'").first<{n:number}>())?.n,1);
+  await drain(env);assert.equal(retried,1);
+  await env.DB.prepare("DELETE FROM settings WHERE key='license-online'").run();await ingest(env,dmEvent('blocked'));assert.equal(await env.DB.prepare("SELECT id FROM jobs WHERE id='dm:blocked'").first(),null);
+  globalThis.fetch=async()=>online();
+  assert.equal((await api('/api/license',{code})).status,200);
+  const state=await(await request('/api/status',{headers})).json() as Record<string,unknown>;assert.ok(!JSON.stringify(state).includes('fake-token'));assert.ok(!JSON.stringify(state).includes('test-key'));
+  assert.equal((await api('/api/disconnect',{})).status,200);assert.equal((await env.DB.prepare('SELECT count(*) n FROM jobs').first<{n:number}>())?.n,0);assert.equal(await env.DB.prepare('SELECT id FROM account').first(),null);
+  await Promise.all(pending);
+ }finally{globalThis.fetch=oldFetch;await mf.dispose();}
+});

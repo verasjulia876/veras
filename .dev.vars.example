@@ -1,0 +1,3 @@
+# Preencha com valores privados e diferentes em cada instalação. Nunca publique seus valores.
+ADMIN_PASSWORD=""
+APP_KEY=""

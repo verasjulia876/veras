@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.dev.vars
+.install-secrets.json
+worker-configuration.d.ts
+dist/
+
+ABRIR-MEU-PAINEL.html
+.install-secrets.json
+
+build/

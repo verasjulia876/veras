@@ -1,0 +1,40 @@
+{
+  "name": "veras",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types --strict-vars=false",
+    "check": "wrangler types --strict-vars=false && tsc --noEmit",
+    "test": "wrangler deploy --dry-run --outdir build && tsx --test tests/*.test.ts",
+    "install:guided": "node scripts/install.mjs",
+    "deploy": "node scripts/update-config.mjs && npm run db:remote && wrangler deploy",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "configure:browser": "node scripts/configure-browser.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.131.2",
+    "typescript": "7.0.2",
+    "tsx": "4.23.13",
+    "@types/node": "26.5.1",
+    "miniflare": "5.20260911.1-alpha"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Banco privado desta instalação. Mantenha a criação automática."
+      },
+      "ADMIN_PASSWORD": {
+        "description": "Sua senha de entrada no DirectCA$H. Escolha uma senha exclusiva com pelo menos 16 caracteres e guarde no gerenciador de senhas."
+      },
+      "APP_KEY": {
+        "description": "Chave privada de criptografia. Use uma senha aleatória de pelo menos 32 caracteres, diferente da senha do painel. Guarde e nunca troque após conectar o Instagram."
+      }
+    }
+  }
+}

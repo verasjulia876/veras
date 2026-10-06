@@ -1,0 +1,1 @@
+fetch('/api/privacy').then(r=>{if(!r.ok)throw Error();return r.json();}).then(d=>{document.querySelector('#owner').textContent=d.owner;document.querySelector('#contact').textContent=d.contact;}).catch(()=>{});
